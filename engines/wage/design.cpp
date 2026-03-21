@@ -58,9 +58,10 @@ struct PlotData {
 	uint fillType;
 	int thickness;
 	Design *design;
+	uint mode;
 
-	PlotData(Graphics::ManagedSurface *s, Graphics::MacPatterns *p, int f, int t, Design *d) :
-		surface(s), patterns(p), fillType(f), thickness(t), design(d) {}
+	PlotData(Graphics::ManagedSurface *s, Graphics::MacPatterns *p, int f, int t, Design *d, uint m = 0) :
+		surface(s), patterns(p), fillType(f), thickness(t), design(d), mode(m) {}
 };
 
 void drawPixelPlain(int x, int y, int color, void *data);
@@ -232,6 +233,36 @@ void Design::adjustBounds(int16 x, int16 y) {
 	_bounds->bottom = MAX(y, _bounds->bottom);
 }
 
+static inline void applyTransferMode(uint mode, bool patternBit, uint32 color, byte *pixel) {
+	switch (mode) {
+	case 1: // srcOr
+		if (patternBit) *pixel = color;
+		break;
+	case 2: // srcXor
+		if (patternBit) *pixel = (*pixel == color) ? (byte)kColorWhite : color;
+		break;
+	case 3: // srcBic
+		if (patternBit) *pixel = (byte)kColorWhite;
+		break;
+	case 4: // notSrcCopy
+		*pixel = !patternBit ? color : (byte)kColorWhite;
+		break;
+	case 5: // notSrcOr
+		if (!patternBit) *pixel = color;
+		break;
+	case 6: // notSrcXor
+		if (!patternBit) *pixel = (*pixel == color) ? (byte)kColorWhite : color;
+		break;
+	case 7: // notSrcBic
+		if (!patternBit) *pixel = (byte)kColorWhite;
+		break;
+	case 0: // srcCopy
+	default:
+		*pixel = patternBit ? color : (byte)kColorWhite;
+		break;
+	}
+}
+
 class PlotDataPrimitives : public Graphics::Primitives {
 	void drawPoint(int x, int y, uint32 color, void *data) override {
 		PlotData *p = (PlotData *)data;
@@ -265,9 +296,8 @@ class PlotDataPrimitives : public Graphics::Primitives {
 				uint xu = (uint)x; // for letting compiler optimize it
 				uint yu = (uint)y;
 
-				*((byte *)p->surface->getBasePtr(xu, yu)) =
-					(pat[yu % 8] & (1 << (7 - xu % 8))) ?
-						color : (byte)kColorWhite;
+				bool patternBit = (pat[yu % 8] & (1 << (7 - xu % 8))) != 0;
+				applyTransferMode(p->mode, patternBit, color, (byte *)p->surface->getBasePtr(xu, yu));
 			}
 		} else {
 			int x1 = x - p->thickness / 2;
@@ -280,9 +310,8 @@ class PlotDataPrimitives : public Graphics::Primitives {
 					if (x >= 0 && x < p->surface->w && y >= 0 && y < p->surface->h) {
 						uint xu = (uint)x; // for letting compiler optimize it
 						uint yu = (uint)y;
-						*((byte *)p->surface->getBasePtr(xu, yu)) =
-							(pat[yu % 8] & (1 << (7 - xu % 8))) ?
-								color : (byte)kColorWhite;
+						bool patternBit = (pat[yu % 8] & (1 << (7 - xu % 8))) != 0;
+						applyTransferMode(p->mode, patternBit, color, (byte *)p->surface->getBasePtr(xu, yu));
 					}
 		}
 	}
@@ -322,8 +351,8 @@ class PlotDataCirclePrimitives : public Graphics::Primitives {
 				uint xu = (uint)x; // for letting compiler optimize it
 				uint yu = (uint)y;
 
-				*((byte *)p->surface->getBasePtr(xu, yu)) =
-					(pat[yu % 8] & (1 << (7 - xu % 8))) ? color : (byte)kColorWhite;
+				bool patternBit = (pat[yu % 8] & (1 << (7 - xu % 8))) != 0;
+				applyTransferMode(p->mode, patternBit, color, (byte *)p->surface->getBasePtr(xu, yu));
 			}
 		} else {
 			int x1 = x - p->thickness / 2;
@@ -331,7 +360,7 @@ class PlotDataCirclePrimitives : public Graphics::Primitives {
 			int y1 = y - p->thickness / 2;
 			int y2 = y1 + p->thickness;
 
-			PlotData pd(p->surface, p->patterns, p->fillType, 1, p->design);
+			PlotData pd(p->surface, p->patterns, p->fillType, 1, p->design, p->mode);
 
 			subprimitives.drawEllipse(x1, y1, x2 - 1, y2 - 1, kColorBlack, true, &pd);
 		}
@@ -456,17 +485,28 @@ void Design::drawRoundRect(Graphics::ManagedSurface *surface, Common::ReadStream
 void Design::drawPolygon(Graphics::ManagedSurface *surface, Common::ReadStream &in,
 	Graphics::MacPatterns &patterns, byte fillType, byte borderThickness, byte borderFillType) {
 
-	byte ignored = in.readSint16BE(); // ignored
-
-	if (ignored)
-		warning("Ignored: %d", ignored);
-
-	int numBytes = in.readSint16BE(); // #bytes used by polygon data, including the numBytes
+	// QuickDraw transfer mode (0 = srcCopy, 1 = srcOr, 2 = srcXor)
+	byte mode = in.readSint16BE();
+	// Total bytes used by polygon data, including this size field itself
+	int numBytes = in.readSint16BE();
 	int16 by1 = in.readSint16BE();
 	int16 bx1 = in.readSint16BE();
 	int16 by2 = in.readSint16BE();
 	int16 bx2 = in.readSint16BE();
 	Common::Rect bbox(bx1, by1, bx2, by2);
+
+	if (mode != 0) {
+		if (mode > 7) {
+			warning("Unsupported polygon transfer mode: %d at %d,%d to %d,%d", mode, bx1, by1, bx2, by2);
+		} else {
+			debug(1, "Polygon transfer mode: %d at %d,%d to %d,%d", mode, bx1, by1, bx2, by2);
+		}
+		// Change this to true to visually debug polygons using transfer modes
+		const bool kDebugDrawPolygonBounds = false;
+		if (kDebugDrawPolygonBounds && surface) {
+			surface->frameRect(bbox, kColorBlack);
+		}
+	}
 
 	if (_surface) {
 		if (!_maskImage) {
@@ -538,7 +578,7 @@ void Design::drawPolygon(Graphics::ManagedSurface *surface, Common::ReadStream &
 		ypoints[i] = ycoords[i];
 	}
 
-	PlotData pd(surface, &patterns, fillType, 1, this);
+	PlotData pd(surface, &patterns, fillType, 1, this, mode);
 	PlotDataPrimitives primitives;
 
 	if (fillType <= patterns.size()) {
