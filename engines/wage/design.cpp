@@ -424,7 +424,7 @@ void Design::drawRoundRect(Graphics::ManagedSurface *surface, Common::ReadStream
 	if (y1 > y2)
 		SWAP(y1, y2);
 
-	if (_boundsCalculationMode) 
+	if (_boundsCalculationMode)
 		_lastOpString = Common::String::format("roundRect %d, %d, %d, %d", x1, y1, x2, y2);
 
 	if (_surface) {
@@ -459,26 +459,17 @@ void Design::drawRoundRect(Graphics::ManagedSurface *surface, Common::ReadStream
 void Design::drawPolygon(Graphics::ManagedSurface *surface, Common::ReadStream &in,
 	Graphics::MacPatterns &patterns, byte fillType, byte borderThickness, byte borderFillType) {
 
-	// Polygon flags (not part of standard QuickDraw).
-	// Observed values in World Builder assets: 1 = Open polyline, 2 = Closed polygon.
-	int16 polyFlags = in.readSint16BE();
-	// Total bytes used by polygon data, including this size field itself
-	int numBytes = in.readSint16BE();
+	byte ignored = in.readSint16BE(); // ignored
+
+	if (ignored)
+		warning("Ignored: %d", ignored);
+
+	int numBytes = in.readSint16BE(); // #bytes used by polygon data, including the numBytes
 	int16 by1 = in.readSint16BE();
 	int16 bx1 = in.readSint16BE();
 	int16 by2 = in.readSint16BE();
 	int16 bx2 = in.readSint16BE();
 	Common::Rect bbox(bx1, by1, bx2, by2);
-
-	if (polyFlags != 0) {
-		debug(1, "Polygon flag: %d for polygon at %d,%d to %d,%d", polyFlags, bx1, by1, bx2, by2);
-
-		// Toggle this to true to see exactly where these polygons are on screen
-		const bool kDebugDrawPolygonFlags = false;
-		if (kDebugDrawPolygonFlags && surface) {
-			surface->frameRect(bbox, kColorBlack);
-		}
-	}
 
 	if (_surface) {
 		if (!_maskImage) {
